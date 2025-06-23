@@ -65,6 +65,14 @@
             flex-direction: row;
             align-items: center;
         }
+        
+        #camera-select {
+            padding: 5px;
+            border-radius: 5px;
+            border: none;
+            background-color: #333;
+            color: white;
+        }
 
         #bottom-hud {
             bottom: 20px;
@@ -75,16 +83,18 @@
         }
         
         #responseText {
-            font-size: 1.5em;
+            font-size: 1.2em; /* Slightly smaller font for more text */
             font-weight: bold;
             color: var(--text-color);
             background: transparent;
-            border: none;
-            resize: none;
             text-align: center;
             width: 100%;
-            min-height: 50px;
-            padding: 10px 0;
+            min-height: 2em; /* Minimum height for one line */
+            max-height: 15vh; /* Max height before scrolling */
+            overflow-y: auto; /* Add scrollbar if needed */
+            padding: 10px;
+            white-space: pre-wrap; /* Preserve line breaks */
+            box-sizing: border-box;
         }
 
         #instruction-controls {
@@ -130,13 +140,15 @@
     </div>
 
     <div id="top-controls" class="overlay">
+        <label for="camera-select">Camera:</label>
+        <select id="camera-select"></select>
         <label for="baseURL">API URL:</label>
         <input id="baseURL" type="text" value="http://localhost:8080" style="width: 200px; padding: 5px; border-radius: 5px; border: none;">
         <button id="startButton" class="start">Start</button>
     </div>
 
     <div id="bottom-hud" class="overlay">
-        <textarea id="responseText" name="Response" readonly placeholder="VLM guidance will appear here..."></textarea>
+        <div id="responseText" name="Response" readonly placeholder="VLM guidance will appear here..."></div>
         <div id="instruction-controls">
             <textarea id="instructionText" name="Instruction" style="height: 40px;"></textarea>
         </div>
@@ -151,6 +163,7 @@
         const instructionText = document.getElementById('instructionText');
         const responseText = document.getElementById('responseText');
         const startButton = document.getElementById('startButton');
+        const cameraSelect = document.getElementById('camera-select');
 
         // State variables
         let stream;
@@ -160,27 +173,56 @@
         let chatHistory = [];
         const SYSTEM_PROMPT = "You are a teleoperation assistant. Describe the scene and guide the user. If you see a clear object of interest based on the user's request, provide a 'direction' (left, right, center, up, down) and a 'text' description in a JSON object.";
         
-        // --- Core Functions ---
+        /**
+         * Populates the camera selection dropdown.
+         */
+        async function getCameras() {
+            try {
+                await navigator.mediaDevices.getUserMedia({video: true}); // Request permission
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoDevices = devices.filter(device => device.kind === 'videoinput');
+                cameraSelect.innerHTML = ''; // Clear previous options
+                videoDevices.forEach((device, index) => {
+                    const option = document.createElement('option');
+                    option.value = device.deviceId;
+                    option.text = device.label || `Camera ${index + 1}`;
+                    cameraSelect.appendChild(option);
+                });
+            } catch (err) {
+                 console.error("Error enumerating devices:", err);
+                 responseText.textContent = `Could not list cameras: ${err.message}.`;
+            }
+        }
 
         /**
-         * Initializes camera and sets up canvas dimensions.
+         * Starts or restarts the video stream with a specific device.
+         * @param {string} deviceId The ID of the camera to use.
          */
-        async function initCamera() {
+        async function startStream(deviceId) {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
+
+            const constraints = {
+                video: {
+                    deviceId: deviceId ? { exact: deviceId } : undefined
+                }
+            };
+
             try {
-                stream = await navigator.mediaDevices.getUserMedia({ 
-                    video: { facingMode: 'environment' }
-                });
+                stream = await navigator.mediaDevices.getUserMedia(constraints);
                 video.srcObject = stream;
                 video.onloadedmetadata = () => {
                     resizeCanvas();
                 };
-                responseText.value = "Camera ready. Press Start.";
+                 responseText.textContent = "Camera ready. Press Start.";
             } catch (err) {
                 console.error("Error accessing camera:", err);
-                responseText.value = `Camera Error: ${err.message}. Ensure permissions are granted.`;
-                alert(`Camera Error: ${err.message}. Please grant camera permissions.`);
+                responseText.textContent = `Camera Error: ${err.message}.`;
+                alert(`Camera Error: ${err.message}.`);
             }
         }
+
 
         /**
          * Sends a condensed history and current image to the VLM.
@@ -256,14 +298,14 @@
 
             const instruction = instructionText.value;
             if (!instruction) {
-                responseText.value = "Please provide an instruction to start.";
+                responseText.textContent = "Please provide an instruction to start.";
                 // Don't stop, just wait for instruction
                 return;
             }
             
             const imageBase64URL = captureImage();
             if (!imageBase64URL) {
-                responseText.value = "Failed to capture image.";
+                responseText.textContent = "Failed to capture image.";
                 return;
             }
 
@@ -272,7 +314,7 @@
                 handleVLMResponse(response);
             } catch (error) {
                 console.error('Error processing frame:', error);
-                responseText.value = `Error: ${error.message}`;
+                responseText.textContent = `Error: ${error.message}`;
             } finally {
                 // After any processing, reset the idle timer
                 resetIdleTimer();
@@ -291,9 +333,10 @@
             startButton.textContent = "Stop";
             startButton.classList.replace('start', 'stop');
             baseURLInput.disabled = true;
+            cameraSelect.disabled = true;
             
             instructionText.value = "Describe what you see and look for a person.";
-            responseText.value = "Starting session...";
+            responseText.textContent = "Starting session...";
             
             processFrame(); // Start processing immediately once
         }
@@ -305,9 +348,10 @@
             startButton.textContent = "Start";
             startButton.classList.replace('stop', 'start');
             baseURLInput.disabled = false;
+            cameraSelect.disabled = false;
             
-            if(responseText.value.startsWith("Starting session...")) {
-                responseText.value = "Session stopped.";
+            if(responseText.textContent.startsWith("Starting session...")) {
+                responseText.textContent = "Session stopped.";
             }
             clearGuidance();
         }
@@ -316,13 +360,17 @@
             isProcessing ? handleStop() : handleStart();
         });
 
+        cameraSelect.addEventListener('change', (event) => {
+            startStream(event.target.value);
+        });
+
         function handleVLMResponse(response) {
             try {
                 const responseJson = JSON.parse(response);
-                responseText.value = responseJson.text || "Received structured response without text.";
+                responseText.textContent = responseJson.text || "Received structured response without text.";
                 drawGuidance(responseJson.direction);
             } catch (e) {
-                responseText.value = response;
+                responseText.textContent = response;
                 clearGuidance();
             }
         }
@@ -332,7 +380,7 @@
             clearTimeout(idleTimer);
             clearTimeout(debounceTimer);
             debounceTimer = setTimeout(() => {
-                responseText.value = "Processing new instruction...";
+                responseText.textContent = "Processing new instruction...";
                 processFrame();
             }, 500); // 0.5s debounce after user stops typing
         }
@@ -366,7 +414,7 @@
                 case 'right': arrow = '➡️'; break;
                 case 'up':    arrow = '⬆️'; break;
                 case 'down':  arrow = '⬇️'; break;
-                case 'center':arrow = '🎯'; break;
+                case 'center':arrow = '�'; break;
                 default:      return;
             }
             ctx.fillText(arrow, guidanceCanvas.width / 2, guidanceCanvas.height / 2);
@@ -388,9 +436,16 @@
 
         // --- Initialization ---
 
-        window.addEventListener('DOMContentLoaded', () => {
-            initCamera();
-        });
+        async function init() {
+            await getCameras();
+            if (cameraSelect.options.length > 0) {
+                await startStream(cameraSelect.value);
+            } else {
+                 responseText.textContent = "No cameras found.";
+            }
+        }
+
+        window.addEventListener('DOMContentLoaded', init);
 
         // Cleanup on page close
         window.addEventListener('beforeunload', () => {
@@ -403,3 +458,4 @@
     </script>
 </body>
 </html>
+�
